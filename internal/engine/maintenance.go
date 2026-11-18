@@ -51,8 +51,8 @@ func Restore(dir string, data []byte) error {
 	defer func() {
 		if !installed {
 			os.Remove(filepath.Join(dir, "checkpoint.lmi"))
-			os.Remove(filepath.Join(dir, "journal.lmw"))
-			os.Remove(filepath.Join(dir, "lamina.lock"))
+			os.Remove(filepath.Join(dir, journal.JournalFileName))
+			os.Remove(filepath.Join(dir, journal.LockFileName))
 			os.Remove(dir)
 		}
 	}()

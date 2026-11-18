@@ -24,7 +24,7 @@ func (d *DB) Stats() (Stats, error) {
 		return Stats{}, err
 	}
 	keys, versions := d.store.Count()
-	s := Stats{Sequence: d.sequence, Horizon: d.horizon, Keys: keys, Versions: versions, Active: []Transaction{}, IndexEntries: map[string]int{}, JournalRecords: len(d.wal.Records), HistoryBase: d.wal.Base, RecoveredTail: d.wal.RecoveredTail, Commits: d.commits, Conflicts: d.conflicts, Queries: d.queries}
+	s := Stats{Sequence: d.sequence, Horizon: d.horizon, Keys: keys, Versions: versions, Active: []Transaction{}, IndexEntries: map[string]int{}, JournalRecords: d.history.Len(), HistoryBase: d.history.Base(), RecoveredTail: d.log.RecoveredTail(), Commits: d.commits, Conflicts: d.conflicts, Queries: d.queries}
 	for _, tx := range d.transactions {
 		copy := *tx
 		copy.writes = nil

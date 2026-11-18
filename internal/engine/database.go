@@ -12,13 +12,27 @@ import (
 	"sync"
 )
 
+// durableCommitLog is the engine's entire dependency on the persistent journal
+// resource. It exposes behaviors (durable append, uncertain-write health,
+// recovery facts, release) rather than the file, lock, mutable record slice or
+// poison flag, so the physical implementation can be replaced without touching
+// engine logic.
+type durableCommitLog interface {
+	Append(record journal.Record) error
+	Poisoned() bool
+	MarkPoisoned()
+	RecoveredTail() int64
+	Close() error
+}
+
 type DB struct {
 	mu           sync.RWMutex
 	dir          string
 	catalog      *catalog.Catalog
 	store        *versions.Store
 	indexes      *index.Registry
-	wal          *journal.WAL
+	log          durableCommitLog
+	history      *journal.History
 	sequence     uint64
 	horizon      uint64
 	transactions map[string]*Transaction
@@ -39,7 +53,7 @@ func Open(dir string) (*DB, error) {
 		return nil, fmt.Errorf("checkpoint: %w", err)
 	}
 	if !missing {
-		if _, err = os.Stat(filepath.Join(absolute, "journal.lmw")); err != nil {
+		if _, err = os.Stat(filepath.Join(absolute, journal.JournalFileName)); err != nil {
 			return nil, fmt.Errorf("checkpoint without journal; use validated restore")
 		}
 	}
@@ -47,19 +61,23 @@ func Open(dir string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &DB{dir: absolute, catalog: catalog.New(), store: versions.New(), wal: w, transactions: map[string]*Transaction{}}
+	// The engine keeps the persistent resource behind the behavior interface and
+	// works against the borrowed logical commit sequence; it never sees the WAL's
+	// file, lock, record backing array or poison flag.
+	d := &DB{dir: absolute, catalog: catalog.New(), store: versions.New(), log: w, history: w.History(), transactions: map[string]*Transaction{}}
 	if !missing {
 		d.catalog = image.Catalog
 		d.store = image.Store
 		d.sequence = image.Sequence
 		d.horizon = image.Horizon
 	}
-	last := w.Base + uint64(len(w.Records))
+	last := d.history.Head()
 	if d.sequence > last {
 		w.Close()
 		return nil, fmt.Errorf("checkpoint ahead of journal")
 	}
-	for _, r := range w.Records {
+	for i := 0; i < d.history.Len(); i++ {
+		r := d.history.At(i)
 		if r.Sequence <= d.sequence {
 			continue
 		}
@@ -81,7 +99,7 @@ func (d *DB) usable() error {
 	if d.closed {
 		return fault("unavailable", "database closed")
 	}
-	if d.wal.Poisoned {
+	if d.log.Poisoned() {
 		return fault("unavailable", "journal write outcome uncertain; restart required")
 	}
 	return nil
@@ -94,16 +112,18 @@ func (d *DB) Close() error {
 	}
 	d.closed = true
 	d.transactions = map[string]*Transaction{}
-	return d.wal.Close()
+	return d.log.Close()
 }
 func (d *DB) publish(r journal.Record) error {
 	r.Sequence = d.sequence + 1
 	r.Format = 1
-	if err := d.wal.Append(r); err != nil {
+	if err := d.log.Append(r); err != nil {
 		return fault("unavailable", "durable commit failed: %s", err)
 	}
 	if err := d.apply(r); err != nil {
-		d.wal.Poisoned = true
+		// The bytes are synced but cannot be applied in memory: the durable
+		// outcome must be reconciled by restart, so mark the resource unhealthy.
+		d.log.MarkPoisoned()
 		return fault("unavailable", "durable record cannot be applied: %s", err)
 	}
 	if len(r.Writes) > 0 {

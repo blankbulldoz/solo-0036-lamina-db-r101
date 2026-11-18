@@ -25,7 +25,7 @@
       "id": "journal",
       "name": "journal",
       "path": "internal/journal",
-      "responsibility": "checksummed framed fsync records, tail recovery and ordering"
+      "responsibility": "pure framed codec, logical commit history, and the persistent WAL resource (lock, fsync, tail recovery, ordering)"
     },
     {
       "id": "index",
